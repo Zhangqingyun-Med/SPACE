@@ -13,13 +13,13 @@
 VlnPlot(xenium.obj, 
         features = c("nFeature_Xenium", "nCount_Xenium"), 
         ncol = 2, 
-        pt.size = 0.1) + 
+        pt.size = 0) + 
   theme(legend.position = "none") # 隐藏图例，让图面更干净
 
 # 空间定位探查（可选但强烈推荐）
 # 在肿瘤切片的真实物理二维空间上，看看那些表达量极低的点分布在哪里。
 # 如果低表达的点都集中在切片边缘，那很可能就是切片时的物理性边缘破损。
-SpatialFeaturePlot(xenium.obj, features = "nCount_Xenium")
+ImageFeaturePlot(xenium.obj, features = "nCount_Xenium")
 
 
 # ------------------------------------------
@@ -37,10 +37,9 @@ min_counts <- 20     # 最小RNA总分子数下限（剔除几乎没有活性的
 # 3. 执行切除：使用 subset 函数正式过滤
 # ------------------------------------------
 # 只有同时满足下面三个条件的细胞，才会被保留下来
-xenium.obj <- subset(xenium.obj, 
-                     subset = nFeature_Xenium > min_features & 
-                       nFeature_Xenium < max_features & 
-                       nCount_Xenium > min_counts)
+xenium.obj <- xenium.obj[, xenium.obj$nFeature_Xenium > min_features & 
+                           xenium.obj$nFeature_Xenium < max_features & 
+                           xenium.obj$nCount_Xenium > min_counts]
 
 
 # ------------------------------------------
@@ -50,7 +49,7 @@ xenium.obj <- subset(xenium.obj,
 VlnPlot(xenium.obj, 
         features = c("nFeature_Xenium", "nCount_Xenium"), 
         ncol = 2, 
-        pt.size = 0.1) + 
+        pt.size =0) + 
   theme(legend.position = "none")
 
 # 打印一下现在还剩多少个高质量细胞，心里有个数
