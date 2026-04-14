@@ -11,13 +11,18 @@
 # 但是！！！只适用于数量较少的情况，比如一万细胞左右
 xenium.obj <- SCTransform(xenium.obj, assay = "Xenium", clip.range = c(-10, 10))
 
+#大体量数据用一下代码
+#xenium.obj <- NormalizeData(xenium.obj)
+#xenium.obj <- FindVariableFeatures(xenium.obj, selection.method = "vst")
+xenium.obj <- ScaleData(xenium.obj)
 
 # ------------------------------------------
 # 2. PCA 线性降维 (提取主要特征)
 # ------------------------------------------
 # 把几千个基因的复杂维度，压缩成最重要的 50 个主成分 (PCs)
 # features = rownames(xenium.obj))这个代码把数据对象里**所有的基因（全体名单）**全塞给电脑，让它去算降维
-xenium.obj <- RunPCA(xenium.obj, npcs = 50, features = rownames(xenium.obj))
+# 可以改用VariableFeatures(object = xenium.obj))，就是只选用关键基因
+xenium.obj <- RunPCA(xenium.obj, npcs = 50, VariableFeatures(object = xenium.obj))
 
 # 【关键术间检查】：画出碎石图 (Elbow Plot)
 # 运行这行代码后，右下角会出现一张图。图上的点会像一条下垂的手臂。
