@@ -22,8 +22,7 @@ xenium.obj <- SCTransform(xenium.obj, assay = "Xenium", clip.range = c(-10, 10))
 # 把几千个基因的复杂维度，压缩成最重要的 50 个主成分 (PCs)
 # features = rownames(xenium.obj))这个代码把数据对象里**所有的基因（全体名单）**全塞给电脑，让它去算降维
 # 可以改用VariableFeatures(object = xenium.obj))，就是只选用关键基因
-xenium.obj <-（features =RunPCA(xenium.obj, npcs = 50, VariableFeatures(object = xenium.obj))
-
+seurat_obj <- RunPCA(seurat_obj, npcs = 50, features = VariableFeatures(object = seurat_obj))
 # 【关键术间检查】：画出碎石图 (Elbow Plot)
 # 运行这行代码后，右下角会出现一张图。图上的点会像一条下垂的手臂。
 # 绝大多数情况下，我们需要找到那个“手肘”弯折的位置对应的数字（通常在 15 到 30 之间）。
