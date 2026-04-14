@@ -47,7 +47,7 @@ xenium.obj <- FindClusters(xenium.obj, resolution = c(0.3, 0.5, 0.8))
 
 # 设定当前我们要观察的分辨率（比如先看看 0.5 分得怎么样）
 Idents(xenium.obj) <- "SCT_snn_res.0.5"
-#这里的名称 "SCT_snn_res.0.5"需要根据前文更改
+#这里的名称 "SCT_snn_res.0.5"需要根据前文更改，用这个代码colnames(xenium.obj@meta.data)
 
 # ------------------------------------------
 # 4. UMAP 非线性降维与出图 (Visualization)
