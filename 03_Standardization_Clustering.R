@@ -14,7 +14,7 @@ xenium.obj <- SCTransform(xenium.obj, assay = "Xenium", clip.range = c(-10, 10))
 #大体量数据用一下代码
 #xenium.obj <- NormalizeData(xenium.obj)
 #xenium.obj <- FindVariableFeatures(xenium.obj, selection.method = "vst")
-xenium.obj <- ScaleData(xenium.obj)
+#xenium.obj <- ScaleData(xenium.obj)
 
 # ------------------------------------------
 # 2. PCA 线性降维 (提取主要特征)
@@ -22,7 +22,7 @@ xenium.obj <- ScaleData(xenium.obj)
 # 把几千个基因的复杂维度，压缩成最重要的 50 个主成分 (PCs)
 # features = rownames(xenium.obj))这个代码把数据对象里**所有的基因（全体名单）**全塞给电脑，让它去算降维
 # 可以改用VariableFeatures(object = xenium.obj))，就是只选用关键基因
-xenium.obj <- RunPCA(xenium.obj, npcs = 50, VariableFeatures(object = xenium.obj))
+xenium.obj <-（features =RunPCA(xenium.obj, npcs = 50, VariableFeatures(object = xenium.obj))
 
 # 【关键术间检查】：画出碎石图 (Elbow Plot)
 # 运行这行代码后，右下角会出现一张图。图上的点会像一条下垂的手臂。
@@ -48,7 +48,7 @@ xenium.obj <- FindClusters(xenium.obj, resolution = c(0.3, 0.5, 0.8))
 
 # 设定当前我们要观察的分辨率（比如先看看 0.5 分得怎么样）
 Idents(xenium.obj) <- "SCT_snn_res.0.5"
-
+#这里的名称 "SCT_snn_res.0.5"需要根据前文更改
 
 # ------------------------------------------
 # 4. UMAP 非线性降维与出图 (Visualization)
