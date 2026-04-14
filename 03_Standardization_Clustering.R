@@ -55,3 +55,10 @@ xenium.obj <- RunUMAP(xenium.obj, reduction = "pca", dims = pcs_use)
 # 运行后你会看到一张彩色的图，上面标着 0, 1, 2... 的数字。
 # 每一个数字代表一个拥有相似基因表达特征的细胞群（可能是肿瘤细胞群、巨噬细胞群等）。
 DimPlot(xenium.obj, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+#0.5代表点的大小，可以灵活调整
+
+# 【图 1：经典的 UMAP 调色盘】# pt.size 设小一点，防止黑墙效应,这个代码可能更好
+#p1 <- DimPlot(xenium.obj, reduction = "umap", label = TRUE, pt.size = 0.1) +
+#NoLegend() + ggtitle("UMAP 细胞分群")# 【图 2：空间原位映射图 (终极杀招！)】# 把 UMAP 上分出来的 0、1、2... 细胞群，按照真实物理坐标“贴”回肿瘤切片上！
+#p2 <- ImageDimPlot(xenium.obj, size = 0.5) +
+#ggtitle("真实物理空间上的细胞群落分布")# 把两张图并排显示！
