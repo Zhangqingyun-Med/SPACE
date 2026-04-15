@@ -13,7 +13,7 @@ Idents(xenium.obj) <- "cell_type"
 # fov = "fov" 代表视场（Field of View），Xenium 数据默认叫这个名字
 # axes = TRUE 会在图片边缘画出物理坐标轴，方便评估切片大小
 # cols = "polychrome" 是一种适合展示多种细胞的鲜艳配色方案
-p1 <- ImageDimPlot(xenium.obj, fov = "fov", axes = TRUE, cols = "polychrome", size = 0.5)
+p1 <- ImageDimPlot(xenium.obj, fov = "fov", axes = TRUE, cols = "polychrome", size = 0.1)
 
 # 在 RStudio 右下角查看全景图
 print(p1)
@@ -25,13 +25,20 @@ print(p1)
 # 在极其密集的肿瘤切片里，细胞全都挤在一起，全景图往往看着很乱。
 # 这时候我们需要把无关细胞变成灰色背景，只点亮我们关心的几个群体。
 # 比如：我们想看看 T 细胞（杀手）和肿瘤细胞（靶子）的空间位置关系
-cells_to_highlight <- c("Tumor cells", "T cells")
+#在这里加上一个命名代码，一定核对名称是否一样
+tumor_cells <- WhichCells(xenium.obj, idents = c("Tumor cells (EPCAM+)", "Tumor cells (LAPTM4B+)", "Proliferating Tumor"))
+t_cells <- WhichCells(xenium.obj, idents = c("T cells", "T cells (CXCR4+)"))
 
+highlight_list <- list(
+  "Cancer" = tumor_cells, 
+  "T_Immune" = t_cells
+)
 p2 <- ImageDimPlot(xenium.obj, 
                    fov = "fov", 
-                   cells = WhichCells(xenium.obj, idents = cells_to_highlight), 
-                   cols = c("red", "blue"), # 肿瘤给红色，T细胞给蓝色
-                   size = 0.5)
+                   cells.highlight = highlight_list, 
+                   cols.highlight = c("red", "blue"), # 对应上面列表里的两个组
+                   size = 0.1) +                      # 22万细胞，点一定要小
+      ggtitle("肿瘤实质与 T 细胞空间交锋图")
 print(p2)
 
 
@@ -47,7 +54,7 @@ p3 <- ImageFeaturePlot(xenium.obj,
                        fov = "fov", 
                        features = features_to_plot, 
                        max.cutoff = "q95", # 屏蔽极少数高得离谱的噪点，让图片对比度更好
-                       size = 0.5)
+                       size = 0.1)
 print(p3)
 
 
