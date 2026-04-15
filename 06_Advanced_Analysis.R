@@ -13,7 +13,7 @@
 # neighbors.k = 30 代表看周围最近的 30 个细胞
 # niches.k = 5 代表我们期望初步把切片划分为 5 种微环境（比如：肿瘤核心区、免疫浸润区、间质区等）
 xenium.obj <- BuildNicheAssay(object = xenium.obj, 
-                              fov = "fov", 
+                              fov = "fov",
                               group.by = "cell_type", # 基于我们第四步注释好的细胞类型来算
                               niches.k = 5, 
                               neighbors.k = 30)
@@ -24,7 +24,7 @@ xenium.obj <- FindClusters(xenium.obj, assay = "niche", resolution = 0.5)
 
 # 出图验证微环境！
 # 你会看到切片被划分成了一块一块的“领地”（比如中间全是红色的一大块肿瘤区，边缘是蓝色的免疫区）
-p_niche <- ImageDimPlot(xenium.obj, fov = "fov", group.by = "niche_clusters", axes = TRUE)
+p_niche <- ImageDimPlot(xenium.obj, group.by = "niche_clusters", axes = TRUE，size = 0.1)
 print(p_niche)
 
 
@@ -34,7 +34,14 @@ print(p_niche)
 # ------------------------------------------
 # 画一个柱状图，直观展示每个微环境里不同细胞类型的比例
 # 比如你会发现：某一个 Niche 里 90% 都是肿瘤细胞和成纤维细胞，几乎没有 T 细胞，这就是典型的“冷肿瘤”区域。
-p_composition <- VlnPlot(xenium.obj, features = "cell_type", group.by = "niche_clusters", pt.size = 0)
+p_composition <- ggplot(meta_data, aes(x = as.factor(niche_clusters), fill = cell_type)) +
+                 geom_bar(position = "fill", color = "black", linewidth = 0.2) + # position="fill" 自动算百分比
+                 theme_classic() +
+                 labs(x = "微环境群 (Niche Clusters)", y = "细胞成分比例 (Proportion)", fill = "细胞类型") +
+                 ggtitle("各微环境区域的细胞组成大解密") +
+                 theme(axis.text.x = element_text(size = 12, face = "bold"))
+
+print(p_composition)
 # (注：用 Seurat 画成分比例图有很多种进阶代码，这里保留最基础的数据探索抓手)
 
 
@@ -48,11 +55,10 @@ p_composition <- VlnPlot(xenium.obj, features = "cell_type", group.by = "niche_c
 # 我们让 CD274 发红光，PDCD1 发绿光。
 # blend = TRUE 是空间通讯最核心的参数！它会把红绿光叠加，如果它们在空间上挨在一起交谈，就会融合成【黄色】！
 p_communication <- ImageFeaturePlot(xenium.obj, 
-                                    fov = "fov", 
                                     features = c("CD274", "PDCD1"), 
                                     blend = TRUE, 
                                     max.cutoff = "q95",
-                                    size = 0.5)
+                                    size = 0.1)
 
 # 这张图一旦跑出来并且有大片的黄色区域，放在文章里就是极其有力的细胞通讯证据
 print(p_communication)
