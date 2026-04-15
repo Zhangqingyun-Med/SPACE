@@ -11,7 +11,8 @@
 # only.pos = TRUE: 只找高表达的基因（我们通常不关心哪个基因表达低）
 # min.pct = 0.25: 这个基因至少要在该群 25% 的细胞中表达
 # logfc.threshold = 0.25: 表达差异倍数阈值
-all.markers <- FindAllMarkers(xenium.obj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+# 加上 max.cells.per.ident = 1000，电脑从每个群里最多随机抽取 1000 个精锐去对比，极大节省时间，且完全不影响找核心 Marker！
+all.markers <- FindAllMarkers(xenium.obj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25，max.cells.per.ident = 1000)
 
 # 【极其推荐的高阶操作】：把找出来的 Marker 基因表保存到本地电脑！
 # 这样你可以用 Excel 打开它，用平时学的医学知识，慢慢看每个群最高表达的是什么基因。
@@ -52,8 +53,13 @@ xenium.obj$cell_type <- Idents(xenium.obj)
 # ------------------------------------------
 # 4. 术后出图：带有真实细胞名字的二维分布与验证
 # ------------------------------------------
-# 画出带有名字的 UMAP 图，现在图上的标签变成了 Tumor, T cells 等
-DimPlot(xenium.obj, reduction = "umap", label = TRUE, pt.size = 0.5, label.size = 4) + NoLegend()
+# 图 1：画出带有名字的 UMAP 图，现在图上的标签变成了 Tumor, T cells 等
+DimPlot(xenium.obj, reduction = "umap", label = TRUE, pt.size = 0.5, label.size = 4) + NoLegend()+ ggtitle("UMAP 细胞鉴定图")
+# 图 2：带名字的空间切片 (Xenium 的灵魂所在)
+p2 <- ImageDimPlot(xenium.obj, size = 0.5) + 
+      NoLegend() + ggtitle("切片原位细胞分布")
+# 并排震撼出图
+p1 + p2
 
 # 【高阶验证图】：气泡图 (DotPlot)
 # 拿你最关心的几个经典基因去验证一下，看看是不是真的只在对应的细胞群里高表达
