@@ -1,0 +1,104 @@
+# ==========================================
+# 1. 加载必要的 R 包
+# ==========================================
+library(Seurat)
+library(DoubletFinder)
+library(harmony)
+library(copykat)
+library(ggplot2)
+# library(SCOP) # 如果你在最后画图时需要，可以取消注释
+
+# ==========================================
+# 2. 读取数据与创建 Seurat 对象
+# ==========================================
+# 你的目标文件夹路径 (请确保这3个gz文件就在这个目录下)
+data_dir <- "Home/R/乳腺癌转移/数据集/骨转移公共数据/" 
+
+print("正在读取 10X 数据...")
+sc_data <- Read10X(data.dir = data_dir)
+# min.cells 和 min.features 是最基础的物理质控，过滤掉极低质量的细胞和基因
+sc_obj <- CreateSeuratObject(counts = sc_data, project = "Bone_Metastasis", 
+                             min.cells = 3, min.features = 200)
+
+# ==========================================
+# 3. 基础质控 (QC) 与线粒体过滤
+# ==========================================
+# 计算线粒体基因比例 (人类基因通常以 MT- 开头)
+sc_obj[["percent.mt"]] <- PercentageFeatureSet(sc_obj, pattern = "^MT-")
+
+# 根据小提琴图的分布设定阈值，这里给一个肿瘤常见经验值 (特征基因 > 500 且 < 6000，线粒体 < 15%)
+sc_obj <- subset(sc_obj, subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & percent.mt < 15)
+
+# ==========================================
+# 4. 数据标准化与降维
+# ==========================================
+sc_obj <- NormalizeData(sc_obj)
+sc_obj <- FindVariableFeatures(sc_obj, selection.method = "vst", nfeatures = 2000)
+sc_obj <- ScaleData(sc_obj)
+sc_obj <- RunPCA(sc_obj)
+
+# 如果你的骨转移数据里包含多个病人的样本（比如通过某些 metadata 区分了 Patient_ID），
+# 你可以在这里插入 Harmony 进行去批次：
+# sc_obj <- RunHarmony(sc_obj, group.by.vars = "Patient_ID")
+# 如果目前只是单个样本合并的矩阵，可以跳过 Harmony。
+
+sc_obj <- RunUMAP(sc_obj, dims = 1:20)
+sc_obj <- FindNeighbors(sc_obj, dims = 1:20)
+sc_obj <- FindClusters(sc_obj, resolution = 0.5)
+
+# ==========================================
+# 5. DoubletFinder 去除双细胞
+# ==========================================
+print("正在运行 DoubletFinder 去除双细胞...")
+# 寻找最佳 pK 值 (这步稍微有点耗时)
+sweep.res.list <- paramSweep_v3(sc_obj, PCs = 1:20, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+
+# 假设双细胞率为 7.5% (根据 10x 官方建议，通常每 1000 个细胞增加 0.8%)
+annotations <- sc_obj@meta.data$seurat_clusters
+homotypic.prop <- modelHomotypic(annotations)
+nExp_poi <- round(0.075 * nrow(sc_obj@meta.data)) 
+nExp_poi.adj <- round(nExp_poi * (1 - homotypic.prop))
+
+# 运行 DoubletFinder
+sc_obj <- doubletFinder_v3(sc_obj, PCs = 1:20, pN = 0.25, pK = optimal_pK, 
+                           nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+
+# 提取 Metadata 中 DoubletFinder 的结果列名，并过滤保留 Singlet (单细胞)
+df_col_name <- colnames(sc_obj@meta.data)[grepl("DF.classifications", colnames(sc_obj@meta.data))]
+sc_obj <- subset(sc_obj, cells = rownames(sc_obj@meta.data)[sc_obj@meta.data[[df_col_name]] == "Singlet"])
+
+# ==========================================
+# 6. 提取上皮细胞 (Epithelial Cells)
+# ==========================================
+# 假设你通过 FeaturePlot(sc_obj, features = c("EPCAM", "KRT18", "KRT19")) 
+# 发现 Cluster 2, 5, 8 是高表达上皮 Marker 的群。
+# 注意：你需要根据实际跑出来的 UMAP 图和 Marker 表达情况去替换下面这行代码里的 c(2, 5, 8)
+epithelial_clusters <- c(2, 5, 8) 
+epi_obj <- subset(sc_obj, idents = epithelial_clusters)
+
+# ==========================================
+# 7. CopyKAT 鉴定恶性细胞 (耗时极长，建议后台运行)
+# ==========================================
+print("准备运行 CopyKAT...")
+# 提取上皮细胞的 raw counts 矩阵
+exp.rawdata <- as.matrix(epi_obj@assays$RNA@counts)
+
+# 运行 copykat，设置 n.cores 为服务器可用的多线程数（比如 8 或 16）
+# 这步可能要跑好几个小时
+copykat.test <- copykat(rawmat = exp.rawdata, id.type = "S", ngene.chr = 5, 
+                        win.size = 25, KS.cut = 0.1, sam.name = "Bone_Epi", 
+                        distance = "euclidean", norm.cell.names = "", output.seg = FALSE, 
+                        plot.genes = TRUE, genome = "hg20", n.cores = 8)
+
+# 将 CopyKAT 的结果（aneuploid 恶性 / diploid 良性）提取出来加回 Seurat 对象
+pred.test <- data.frame(copykat.test$prediction)
+rownames(pred.test) <- pred.test$cell.names
+epi_obj <- AddMetaData(epi_obj, metadata = pred.test$copykat.pred, col.name = "CopyKAT_Result")
+
+# 最后提取出被鉴定为非整倍体 (aneuploid) 的纯恶性上皮细胞，准备做后续的 geneNMF 分群
+malignant_obj <- subset(epi_obj, subset = CopyKAT_Result == "aneuploid")
+
+print("骨转移恶性细胞提取完毕！准备进入 geneNMF 与 SCOP 绘图阶段。")
