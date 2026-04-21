@@ -1,104 +1,244 @@
-# ==========================================
-# 1. 加载必要的 R 包
-# ==========================================
+# ==============================================================================
+# 乳腺癌骨转移单细胞 RNA-seq 分析完整管线 (Pipeline)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 模块 1：环境准备与批量加载数据
+# 逻辑：把所有需要的 R 包一次性加载好，并通过循环自动读取多个患者样本进行合并。
+# ------------------------------------------------------------------------------
 library(Seurat)
 library(DoubletFinder)
 library(harmony)
 library(copykat)
+library(GeneNMF)
 library(ggplot2)
-# library(SCOP) # 如果你在最后画图时需要，可以取消注释
+library(SCP)
 
-# ==========================================
-# 2. 读取数据与创建 Seurat 对象
-# ==========================================
-# 你的目标文件夹路径 (请确保这3个gz文件就在这个目录下)
-data_dir <- "Home/R/乳腺癌转移/数据集/骨转移公共数据/" 
+message(">>> 模块 1：开始加载数据...")
 
-print("正在读取 10X 数据...")
-sc_data <- Read10X(data.dir = data_dir)
-# min.cells 和 min.features 是最基础的物理质控，过滤掉极低质量的细胞和基因
-sc_obj <- CreateSeuratObject(counts = sc_data, project = "Bone_Metastasis", 
-                             min.cells = 3, min.features = 200)
+# 设置存放 13 个骨转移样本的父目录
+parent_dir <- "~/R/乳腺癌转移/数据集/骨转移公共数据/"
 
-# ==========================================
-# 3. 基础质控 (QC) 与线粒体过滤
-# ==========================================
-# 计算线粒体基因比例 (人类基因通常以 MT- 开头)
+# 自动获取父目录下所有的子文件夹名称（即样本名）
+all_samples <- list.dirs(parent_dir, full.names = FALSE, recursive = FALSE)
+print(all_samples)
+
+# 使用 lapply 循环读取所有样本，并创建初始的 Seurat 对象列表
+sc_list <- lapply(all_samples, function(s) {
+  folder_path <- paste0(parent_dir, s, "/")
+  message("正在读取样本: ", s)
+  
+  data <- Read10X(data.dir = folder_path)
+  
+  # 兼容不同 10X CellRanger 版本的数据格式
+  if (is.list(data)) {
+    counts_matrix <- data[["Gene Expression"]]
+  } else {
+    counts_matrix <- data
+  }
+  
+  # 创建 Seurat 对象，初步过滤掉表达极少基因的细胞（<200）和极少表达的基因（<3）
+  obj <- CreateSeuratObject(counts = counts_matrix, 
+                            project = s, 
+                            min.cells = 3, 
+                            min.features = 200)
+  return(obj)
+})
+
+# 将列表中的 13 个样本合并成一个超级大的 Seurat 对象
+sc_obj <- merge(sc_list[[1]], 
+                y = sc_list[2:length(sc_list)], 
+                add.cell.ids = all_samples)
+
+# 释放内存（合并后原列表就不需要了，清理掉防卡顿）
+rm(sc_list)
+gc()
+
+
+# ------------------------------------------------------------------------------
+# 模块 2：质量控制 (QC) 与细胞过滤
+# 逻辑：剔除死细胞（线粒体高）、空液滴（基因数过低）和潜在的双细胞（基因数畸高）。
+# ------------------------------------------------------------------------------
+message(">>> 模块 2：执行质量控制...")
+
+# 计算线粒体基因比例（判断细胞活性，过高说明细胞破裂）
 sc_obj[["percent.mt"]] <- PercentageFeatureSet(sc_obj, pattern = "^MT-")
+# 计算核糖体基因比例
+sc_obj[["percent.rb"]] <- PercentageFeatureSet(sc_obj, pattern = "^RP[SL]")
 
-# 根据小提琴图的分布设定阈值，这里给一个肿瘤常见经验值 (特征基因 > 500 且 < 6000，线粒体 < 15%)
-sc_obj <- subset(sc_obj, subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & percent.mt < 15)
+# 可视化质控指标分布（过滤前）
+# VlnPlot(sc_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "orig.ident")
 
-# ==========================================
-# 4. 数据标准化与降维
-# ==========================================
-sc_obj <- NormalizeData(sc_obj)
-sc_obj <- FindVariableFeatures(sc_obj, selection.method = "vst", nfeatures = 2000)
-sc_obj <- ScaleData(sc_obj)
-sc_obj <- RunPCA(sc_obj)
+# 执行严格过滤
+sc_obj_filt <- subset(sc_obj, 
+                      subset = nFeature_RNA > 200 &   # 剔除破裂的空泡
+                        nFeature_RNA < 7500 &         # 剔除可能包含两个细胞的液滴 (Doublets)
+                        percent.mt < 20)              # 剔除死细胞
 
-# 如果你的骨转移数据里包含多个病人的样本（比如通过某些 metadata 区分了 Patient_ID），
-# 你可以在这里插入 Harmony 进行去批次：
-# sc_obj <- RunHarmony(sc_obj, group.by.vars = "Patient_ID")
-# 如果目前只是单个样本合并的矩阵，可以跳过 Harmony。
+message("过滤前细胞数:", ncol(sc_obj), " | 过滤后细胞数:", ncol(sc_obj_filt))
 
-sc_obj <- RunUMAP(sc_obj, dims = 1:20)
-sc_obj <- FindNeighbors(sc_obj, dims = 1:20)
-sc_obj <- FindClusters(sc_obj, resolution = 0.5)
 
-# ==========================================
-# 5. DoubletFinder 去除双细胞
-# ==========================================
-print("正在运行 DoubletFinder 去除双细胞...")
-# 寻找最佳 pK 值 (这步稍微有点耗时)
-sweep.res.list <- paramSweep_v3(sc_obj, PCs = 1:20, sct = FALSE)
-sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
-bcmvn <- find.pK(sweep.stats)
-optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# ------------------------------------------------------------------------------
+# 模块 3：数据标准化、降维与 Harmony 去批次整合
+# 逻辑：消除不同患者/不同测序批次带来的技术误差，让相同类型的细胞聚在一起。
+# ------------------------------------------------------------------------------
+message(">>> 模块 3：降维与批次效应矫正...")
 
-# 假设双细胞率为 7.5% (根据 10x 官方建议，通常每 1000 个细胞增加 0.8%)
-annotations <- sc_obj@meta.data$seurat_clusters
-homotypic.prop <- modelHomotypic(annotations)
-nExp_poi <- round(0.075 * nrow(sc_obj@meta.data)) 
-nExp_poi.adj <- round(nExp_poi * (1 - homotypic.prop))
+# 标准的 Seurat 处理三板斧
+sc_obj_filt <- NormalizeData(sc_obj_filt) %>%
+  FindVariableFeatures(nfeatures = 2000) %>%  # 挑出最具代表性的 2000 个高变基因
+  ScaleData() %>%
+  RunPCA(verbose = FALSE)
 
-# 运行 DoubletFinder
-sc_obj <- doubletFinder_v3(sc_obj, PCs = 1:20, pN = 0.25, pK = optimal_pK, 
-                           nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+# 运行 Harmony 矫正不同样本 (orig.ident) 之间的批次效应
+sc_obj_filt <- IntegrateLayers(object = sc_obj_filt, method = HarmonyIntegration, 
+                               orig.reduction = "pca", new.reduction = "harmony", verbose = FALSE)
 
-# 提取 Metadata 中 DoubletFinder 的结果列名，并过滤保留 Singlet (单细胞)
-df_col_name <- colnames(sc_obj@meta.data)[grepl("DF.classifications", colnames(sc_obj@meta.data))]
-sc_obj <- subset(sc_obj, cells = rownames(sc_obj@meta.data)[sc_obj@meta.data[[df_col_name]] == "Singlet"])
+# 基于去批次后的 Harmony 结果进行聚类和二维映射 (UMAP)
+sc_obj_filt <- FindNeighbors(sc_obj_filt, reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 0.5) %>%
+  RunUMAP(reduction = "harmony", dims = 1:30)
 
-# ==========================================
-# 6. 提取上皮细胞 (Epithelial Cells)
-# ==========================================
-# 假设你通过 FeaturePlot(sc_obj, features = c("EPCAM", "KRT18", "KRT19")) 
-# 发现 Cluster 2, 5, 8 是高表达上皮 Marker 的群。
-# 注意：你需要根据实际跑出来的 UMAP 图和 Marker 表达情况去替换下面这行代码里的 c(2, 5, 8)
-epithelial_clusters <- c(2, 5, 8) 
-epi_obj <- subset(sc_obj, idents = epithelial_clusters)
+# 合并 Layers（Seurat v5 特性，方便后续分析）
+sc_obj_filt <- JoinLayers(sc_obj_filt)
 
-# ==========================================
-# 7. CopyKAT 鉴定恶性细胞 (耗时极长，建议后台运行)
-# ==========================================
-print("准备运行 CopyKAT...")
-# 提取上皮细胞的 raw counts 矩阵
-exp.rawdata <- as.matrix(epi_obj@assays$RNA@counts)
 
-# 运行 copykat，设置 n.cores 为服务器可用的多线程数（比如 8 或 16）
-# 这步可能要跑好几个小时
-copykat.test <- copykat(rawmat = exp.rawdata, id.type = "S", ngene.chr = 5, 
-                        win.size = 25, KS.cut = 0.1, sam.name = "Bone_Epi", 
-                        distance = "euclidean", norm.cell.names = "", output.seg = FALSE, 
-                        plot.genes = TRUE, genome = "hg20", n.cores = 8)
+# ------------------------------------------------------------------------------
+# 模块 4：细胞类型注释 (Cell Type Annotation)
+# 逻辑：根据经典的 Marker 基因（从前面的气泡图中确认过），给 0~22 号无意义的亚群赋予真实生物学名称。
+# ------------------------------------------------------------------------------
+message(">>> 模块 4：细胞亚群注释...")
 
-# 将 CopyKAT 的结果（aneuploid 恶性 / diploid 良性）提取出来加回 Seurat 对象
-pred.test <- data.frame(copykat.test$prediction)
+current_cluster_ids <- as.character(0:22)
+new_cluster_ids <- c(
+  "Monocytes_Macrophages", "Epithelial", "T_cells", "Monocytes_Macrophages", 
+  "T_cells", "Epithelial", "Fibroblasts", "Fibroblasts", "Epithelial", 
+  "Epithelial", "Epithelial", "Immune_Other", "Immune_Other", "Endothelial", 
+  "Immune_Other", "Immune_Other", "Immune_Other", "Immune_Other", "B_cells", 
+  "Immune_Other", "Immune_Other", "Immune_Other", "Immune_Other"
+)
+names(new_cluster_ids) <- current_cluster_ids
+
+# 替换名字并存入 meta.data 的 cell_type 列中
+sc_obj_filt <- RenameIdents(sc_obj_filt, new_cluster_ids)
+sc_obj_filt$cell_type <- Idents(sc_obj_filt)
+
+# 保存全局对象和 DotPlot 验证图
+saveRDS(sc_obj_filt, file = "Bone_Met_Global_Final.rds")
+
+p_dot <- DotPlot(sc_obj_filt, features = c("EPCAM", "KRT8", "PTPRC", "CD3E", "CD14", "CD79A", "COL1A1", "PECAM1"), 
+                 group.by = "cell_type", dot.scale = 8, cols = c("lightgrey", "#E64B35")) + theme_classic()
+ggsave("Bone_Met_Final_DotPlot.pdf", p_dot, width = 8, height = 5)
+
+
+# ------------------------------------------------------------------------------
+# 模块 5：利用 copyKAT 鉴定恶性肿瘤细胞 (Aneuploid vs Diploid)
+# 逻辑：上皮细胞 (Epithelial) 里可能混有正常的乳腺组织细胞。copyKAT 通过推断染色体
+#      拷贝数变异 (CNV)，揪出发生基因组畸变的真正恶性肿瘤细胞。
+# ------------------------------------------------------------------------------
+message(">>> 模块 5：准备并运行 copyKAT...")
+
+# 提取上皮细胞(待鉴定) + 内皮/成纤维(作为内参)
+sc_cnv_ready <- subset(sc_obj_filt, idents = c("Epithelial", "Endothelial", "Fibroblasts"))
+
+# 提取表达矩阵
+exp.rawdata <- as.matrix(GetAssayData(sc_cnv_ready, assay = "RNA", layer = "counts"))
+
+# 【核心优化】：明确告诉算法，内皮和成纤维是绝对正常的细胞，作为推断的基准 (Baseline)
+normal_cells <- rownames(sc_cnv_ready@meta.data[sc_cnv_ready$cell_type %in% c("Endothelial", "Fibroblasts"), ])
+
+# 运行 copyKAT 算法
+copykat.res <- copykat(
+  rawmat = exp.rawdata,
+  id.type = "S",                  # 基因名为 Symbol
+  cell.line = "no",               # 临床组织样本选 no
+  ngene.chr = 5, win.size = 25, KS.cut = 0.1, distance = "euclidean",
+  sam.name = "Bone_Metastasis",
+  norm.cell.names = normal_cells, # 喂入正常的基准细胞
+  n.cores = 8                     # 多线程加速
+)
+
+# 提取预测结果并加回 Seurat 对象
+pred.test <- data.frame(copykat.res$prediction)
 rownames(pred.test) <- pred.test$cell.names
-epi_obj <- AddMetaData(epi_obj, metadata = pred.test$copykat.pred, col.name = "CopyKAT_Result")
+sc_cnv_ready <- AddMetaData(sc_cnv_ready, metadata = pred.test$copykat.pred, col.name = "copyKAT_pred")
 
-# 最后提取出被鉴定为非整倍体 (aneuploid) 的纯恶性上皮细胞，准备做后续的 geneNMF 分群
-malignant_obj <- subset(epi_obj, subset = CopyKAT_Result == "aneuploid")
+# 处理少部分未算出来的细胞
+sc_cnv_ready$copyKAT_pred[is.na(sc_cnv_ready$copyKAT_pred)] <- "unknown"
 
-print("骨转移恶性细胞提取完毕！准备进入 geneNMF 与 SCOP 绘图阶段。")
+saveRDS(sc_cnv_ready, file = "Bone_Met_copyKAT_Final.rds")
+
+
+# ------------------------------------------------------------------------------
+# 模块 6：NMF 分析探索肿瘤细胞内部的异质性 (Meta-Programs)
+# 逻辑：只提取真正的恶性细胞，用 NMF 算法寻找它们正在执行的不同“基因程序”（例如转移、增殖、代谢等）。
+# ------------------------------------------------------------------------------
+message(">>> 模块 6：肿瘤细胞 NMF 亚群分析...")
+
+# 精准提取：细胞类型必须是上皮，且 copyKAT 判定为恶性 (aneuploid)
+sc_tumor <- subset(sc_cnv_ready, subset = cell_type == "Epithelial" & copyKAT_pred == "aneuploid")
+message(paste("纯净恶性肿瘤细胞数量:", ncol(sc_tumor)))
+
+# 重新跑一遍基础降维（因为数据子集变了，原来的 PCA/UMAP 就不适用了）
+sc_tumor <- NormalizeData(sc_tumor) %>%
+  FindVariableFeatures(nfeatures = 3000) %>%
+  ScaleData() %>%
+  RunPCA(verbose = FALSE) %>%
+  RunUMAP(dims = 1:20, verbose = FALSE)
+
+# 1. 评估 NMF 最优的 K 值 (Rank)
+geneNMF.programs <- multiNMF(list(sc_tumor), assay = "RNA", slot = "data", k = 2:8, nfeatures = 2000, hvg = TRUE, min.cells.per.sample = 10)
+
+# 2. 提取共性程序 (Meta-Programs)，设定为 6 个
+geneNMF.metaprograms <- getMetaPrograms(geneNMF.programs, nMP = 6, max.genes = 200, hclust.method = "ward.D2")
+
+# 3. NMF 模块打分（使用 Seurat 官方的金标准 AddModuleScore）
+mp_gene_list <- geneNMF.metaprograms$metaprograms.genes
+sc_tumor <- AddModuleScore(object = sc_tumor, features = mp_gene_list, name = "MP")
+
+# 4. 根据最高分，为每个肿瘤细胞分配一个主导的 MP (Meta-Program) 身份
+mp_columns <- paste0("MP", seq_along(mp_gene_list))
+score_matrix <- sc_tumor@meta.data[, mp_columns]
+dominant_mp_index <- max.col(score_matrix, ties.method = "first")
+sc_tumor$NMF_program <- paste0("MP", dominant_mp_index)
+
+saveRDS(sc_tumor, file = "Bone_Met_Tumor_NMF.rds")
+
+
+# ------------------------------------------------------------------------------
+# 模块 7：高级整合可视化 (使用 SCP 包出图)
+# 逻辑：集中生成用于文章发表或组会汇报的高质量 PDF 矢量图。
+# ------------------------------------------------------------------------------
+message(">>> 模块 7：绘制并保存全部可视化结果...")
+
+# 7.1 全局细胞类型 UMAP 图
+p1 <- CellDimPlot(sc_obj_filt, group.by = "cell_type", reduction = "umap", label = TRUE, label_repel = TRUE, theme_use = "theme_blank", title = "Bone Metastasis - All Cells")
+ggsave("SCP_Global_UMAP.pdf", p1, width = 8, height = 6)
+
+# 7.2 copyKAT 良恶性鉴定 UMAP 图
+p2 <- CellDimPlot(sc_cnv_ready, group.by = "copyKAT_pred", reduction = "umap", palcolor = c("aneuploid" = "#E64B35", "diploid" = "#4DBBD5", "unknown" = "lightgrey"), theme_use = "theme_blank", title = "copyKAT Prediction")
+ggsave("SCP_copyKAT_UMAP.pdf", p2, width = 7, height = 5)
+
+# 7.3 NMF 肿瘤异质性 UMAP 图
+p3 <- CellDimPlot(sc_tumor, group.by = "NMF_program", reduction = "umap", label = TRUE, label_repel = TRUE, theme_use = "theme_blank", title = "Tumor Cells - NMF Meta-Programs")
+ggsave("SCP_Tumor_NMF_UMAP.pdf", p3, width = 7, height = 5)
+
+# 7.4 NMF 程序 Top 基因热图
+top_genes_per_mp <- lapply(geneNMF.metaprograms$metaprograms.genes, head, 15)
+all_top_genes <- unique(unlist(top_genes_per_mp))
+
+# 【关键兼容性修复】：将 Seurat v5 的 Assay5 退回 v4 的经典 Assay，防止 SCP 热图报错
+sc_tumor[["RNA"]] <- as(object = sc_tumor[["RNA"]], Class = "Assay")
+
+p4 <- GroupHeatmap(sc_tumor, features = all_top_genes, group.by = "NMF_program", heatmap_palette = "RdBu", show_row_names = TRUE, column_title = "NMF Meta-Programs", row_title = "Top Marker Genes")
+ggsave("SCP_NMF_Heatmap.pdf", p4$plot, width = 10, height = 12)
+
+# 7.5 NMF 程序打分小提琴图
+p5 <- VlnPlot(sc_tumor, features = mp_columns, group.by = "NMF_program", ncol = 3, pt.size = 0) 
+ggsave("SCP_NMF_VlnPlot.pdf", p5, width = 12, height = 8)
+
+# 7.6 NMF 程序打分气泡图 (Feature UMAP)
+p6 <- FeatureDimPlot(sc_tumor, features = mp_columns, reduction = "umap", theme_use = "theme_blank", ncol = 3)
+ggsave("SCP_NMF_FeatureDimPlot.pdf", p6, width = 14, height = 10)
+
+message(">>> 恭喜！全流程分析已顺利跑完！")
